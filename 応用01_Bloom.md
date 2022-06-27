@@ -1,0 +1,657 @@
+[toc]
+
+# 応用01_Bloomアルゴリズム
+
+## 1. Bloomは何ですか
+
+現在ゲームの後期エフェクト（PostProcessing）中、良くある２つの効果。ColorGrading（色調整）とBloom。
+
+### 1.1 Bloomの効果を見よう
+
+![image-20220628034838185](https://s2.loli.net/2022/06/28/f2VmrRIAM1ihvLT.png)
+
+写真の明るい部分が周囲に「拡散」し、霞がかかったような効果をもたらすことで、実際のカメラ画像効果をシミュレートします。
+
+### 1.2　Bloom実装の原理
+
+1. **実装の考え方**
+
+   1. 閾値に従って、原画像の明るい部分を抽出する。
+   2. 画像をブラー(Blur)する
+   3. 元画像とブレントする
+
+2. **予備知識**
+
+   1. LDR（Low Dynamic Range）
+
+      　クスチャの一般的なフォマードはjpg、pngなどですが、これらのいわゆる「LDR」です。このタイプの画像の色範囲は[0,1]の間、RGB 0-255に対応する。
+
+   2. HDR	（High Dynamic Range）
+
+      　[0,1]以外の画像が表現できる場合は、「HDR」と呼びます。HDRを保存できる画像フォーマットは、hdr/tif/exrなどです。
+
+3. **畳み込み(convolution)**
+
+   　画像処理の畳み込み演算とは、畳み込みの一つカーネル（kernel）を用いて画像中の各ピクセルと演算をすることです。カーネルは通常は2x2、3x3の格子構造です。
+
+      　画像中のある画素を畳み込む場合、畳み込みカーネルの中心をその画素に置き、カーネルを反転させ、カーネルの各要素とそれがカバーする画像の画素値の積を順番に計算して合計すると、その位置の新しい画素値が得られます
+
+   ![image-Bloom_02](https://s2.loli.net/2022/06/28/VHudEoLgObClfMD.png)
+
+4. **ガウシアンブラー(Gaussian Blur)**
+
+   　ガウシアンブラーjは畳み込み計算を利用しており、ガウスカーネルと呼ばれる畳み込みカーネルを使用する。ガウシアンカーネルは、各要素が以下のガウシアン平方に基づいて計算される正方形サイズのフィルターカーネルである。
+
+   ​														*G* (x,y)=![image-Bloom04](https://s2.loli.net/2022/06/28/HR1JxqESArI4m3T.jpg)
+
+   　ここで、σは標準分散（通常1とする）、xとyはそれぞれ現在位置から畳み込み中心までの整数の距離です。ガウスカーネルを構成するためには、ガウスカーネルの各位置に対応するガウス値を計算すればよい。フィルタリングされた画像が暗くならないように、ガウスカーネルを正規化する必要があります。
+
+   ​	一つNxNのガウスカーネルを使用して画像を畳み込むとNxNxWxH回計算が必要です。そこで、２次元のガウスカーネルを二つの1次元ガウスカーネルに分割することができる。その二つの1次元ガウスカーネルを使用して画像をフィルタリングすると、２次元のガウスカーネルを直接使うのと同じ結界が得られる。しかも2xNxWxHで済む。さらに、2つの1次元ガウスカーネルには多くの繰り返しがあることがわかる。実際に、サイズ５の1次元ガウスカーネルは３つの数値を記録すればよい。
+
+   ![](https://s2.loli.net/2022/06/28/9lZgF3dU27Xtfso.jpg)
+
+## 2.  UnityでBloom効果を実現する
+
+1. C#: OnRenderImage使用
+
+   ```c#
+   using UnityEngine;
+   
+   namespace _01_Bloom
+   {
+       public class Bloom : PostEffectsBase
+       {
+           [SerializeField] private Shader _bloomShader;
+           private Material _bloomMaterial = null;
+   
+           public Material BloomMaterial
+           {
+               get
+               {
+                   //Check Shader
+                   _bloomMaterial = CheckShaderAndCreateMaterial(_bloomShader, _bloomMaterial);
+                   return _bloomMaterial;
+               }
+           }
+   
+           /// <summary>
+           /// Blur iterations - larger number means more blur.
+           /// </summary>
+           [SerializeField][Range(0, 4)] private int _iterations = 3;
+   
+           /// <summary>
+           /// Blur spread for each iteration - larger value means more blur
+           /// </summary>
+           [SerializeField][Range(0.2f, 3.0f)] private float _blurSpread = 0.6f;
+       
+           [SerializeField][Range(1, 8)] private int _downSample = 4;
+   
+           /// <summary>
+           /// 閾値
+           /// </summary>
+           [SerializeField][Range(0.0f, 4.0f)] private float _luminanceThreshold = 0.6f;
+       
+           private void OnRenderImage(RenderTexture src, RenderTexture dest)
+           {
+               //check 
+               if (BloomMaterial != null)
+               {
+                   BloomMaterial.SetFloat("_LuminanceThreshold",_luminanceThreshold);
+   
+                   int rtw = src.width / _downSample; // RenderTextureWidth
+                   int rth = src.height / _downSample; // RenderTextureHeight
+               
+                   RenderTexture buffer0 = RenderTexture.GetTemporary(rtw,rth,0);
+                   buffer0.filterMode = FilterMode.Bilinear; 
+                   //Pass0 ExtractBright 元画像　-> buffer0
+                   Graphics.Blit(src,buffer0,BloomMaterial,0);
+   
+                   for (int i = 0; i < _iterations; i++) //gaussianBlur
+                   {
+                       //gaussianBlur の範囲
+                       BloomMaterial.SetFloat("_BlurSize",1.0f + i * _blurSpread);
+                       RenderTexture buffer1 = RenderTexture.GetTemporary(rtw, rth, 0);
+                       //pass1 BlurVertical 結果はbuffer1 に格納される
+                       Graphics.Blit(buffer0, buffer1, BloomMaterial, 1);
+                       RenderTexture.ReleaseTemporary(buffer0);
+                       buffer0 = buffer1;
+          
+                       buffer1 = RenderTexture.GetTemporary(rtw, rth, 0);
+                       //pass2 BlurHorizontal 結果はbuffer1 に格納される
+                       Graphics.Blit(buffer0, buffer1, BloomMaterial, 2);
+                       RenderTexture.ReleaseTemporary(buffer0);
+                       buffer0 = buffer1;
+                   }
+               
+        
+                   //buffer0 -> _Bloom Texture
+                   BloomMaterial.SetTexture("_Bloom" ,buffer0);
+                   // pass3 元画像とブレントする
+                   Graphics.Blit(src,dest,BloomMaterial,3);
+                   RenderTexture.ReleaseTemporary(buffer0);
+               }
+               else
+               {
+                   Graphics.Blit(src, dest);//異常の場合、元画像を輸出
+               }
+           }
+       }
+   }
+   
+   ```
+
+   
+
+2. Shader : 四つのPassを使用 //勉強のため、四つのPassを使用する、実際は必要ないです
+
+   ```shader
+   Shader "Wyt/Unlit/Bloom"
+   {
+       Properties
+       {
+           _MainTex("Base(RGB)", 2D) = "white"{}
+           _Bloom("Bloom(RGB)",2D) ="black" {}
+           _LuminanceThreshold("Luminance Threshold" ,Float) = 0.5
+           _BlurSize ("Blur Size", Float) = 1.0
+       }
+       SubShader
+       {
+           CGINCLUDE
+           #include "UnityCG.cginc"
+           sampler2D _MainTex;
+           half4 _MainTex_TexelSize;
+           sampler2D _Bloom;
+           float _LuminanceThreshold;
+           float _BlurSize;
+   
+           struct v2fExtractBright
+           {
+               float4 pos : SV_POSITION;
+               half2 uv : TEXCOORD0;
+           };
+           
+           v2fExtractBright vertExtractBright(appdata_img i)
+           {
+               v2fExtractBright o;
+               o.pos = UnityObjectToClipPos(i.vertex);
+               o.uv  = i.texcoord;
+   
+               return o;
+           }
+           //Brightness計算
+           float luminance(fixed4 color)
+           {
+               return 0.2125 * color.r + 0.7154 * color.g + 0.0721 * color.b;
+           }
+           
+           float4 fragExtractBright(v2fExtractBright i) : SV_TARGET0
+           {
+               fixed4 color = tex2D(_MainTex,i.uv);
+               //閾値で明るい部分を抽出する
+               fixed val = clamp(luminance(color) - _LuminanceThreshold,0.0,1.0);
+               //通過しない部分は0になる
+               return  color * val;
+           }
+   
+           struct v2fBlur
+           {
+               float4 pos : SV_POSITION;
+               half2 uv[5] : TEXCOORD0;//5x5 
+           };
+   
+           v2fBlur vertBlurVertical(appdata_img i)
+           {
+               v2fBlur o;
+               o.pos = UnityObjectToClipPos(i.vertex);
+               half2 uv  = i.texcoord;
+   
+               o.uv[0] = uv;
+               o.uv[1] = uv + float2(0.0,_MainTex_TexelSize.y * 1.0) * _BlurSize;
+               o.uv[2] = uv - float2(0.0,_MainTex_TexelSize.y * 1.0) * _BlurSize;
+               o.uv[3] = uv + float2(0.0,_MainTex_TexelSize.y * 2.0) * _BlurSize;
+               o.uv[4] = uv - float2(0.0,_MainTex_TexelSize.y * 2.0) * _BlurSize;
+               return o;
+           }
+   
+           v2fBlur vertBlurHorizontal(appdata_img i)
+           {
+               v2fBlur o;
+               o.pos = UnityObjectToClipPos(i.vertex);
+               half2 uv  = i.texcoord;
+   
+               o.uv[0] = uv;
+               o.uv[1] = uv + float2(_MainTex_TexelSize.x * 1.0, 0.0) * _BlurSize;
+               o.uv[2] = uv - float2(_MainTex_TexelSize.x * 1.0, 0.0) * _BlurSize;
+               o.uv[3] = uv + float2(_MainTex_TexelSize.x * 2.0, 0.0) * _BlurSize;
+               o.uv[4] = uv - float2(_MainTex_TexelSize.x * 2.0, 0.0) * _BlurSize;
+               return o;
+           }
+   
+           float4 fragBlur(v2fBlur i) : SV_Target
+           {
+               //元カウスカーネル{0.0545,0.0242,0.4026, 0.2442, 0.0545}
+               float weight[3] = {0.4026,0.2442,0.0545};
+               //blur後の値
+               fixed3 sum = tex2D(_MainTex,i.uv[0]).rgb * weight[0];
+               
+               //畳み込み計算
+               /*
+               i = 1：uv[1]*weight[1]  uv[2]*weight[1]
+               i = 2：uv[3]*weight[2]  uv[4]*weight[2]
+               */
+               for (int it = 1; it < 3; it++)
+               {
+                   sum += tex2D(_MainTex, i.uv[it*2-1]).rgb * weight[it];
+                   sum += tex2D(_MainTex, i.uv[it*2]).rgb * weight[it];
+               }
+   
+               return fixed4(sum,1.0);
+           }
+   
+           struct v2fBloom
+           {
+               float4 pos : SV_POSITION;
+               //_MainTex uv と　_Bloom uv
+               half4 uv : TEXCOORD0;
+           };
+   
+           v2fBloom vertBloom(appdata_img i)
+           {
+               v2fBloom o;
+               o.pos = UnityObjectToClipPos(i.vertex);
+               o.uv.xy  = i.texcoord;
+               o.uv.zw  = i.texcoord;
+               //プラットフォームに応じた処理
+               #if UNITY_UV_STARTS_AT_TOP
+                   if(_MainTex_TexelSize.y <0.0)
+                   {
+                       o.uv.w = 1.0 - o.uv.w;
+                   }
+               #endif
+               
+               return o;
+           }
+   
+           fixed4 fragBloom(v2fBloom i) : SV_Target
+           {
+               return tex2D(_MainTex, i.uv.xy) + tex2D(_Bloom,i.uv.zw);
+           }
+           
+           ENDCG
+           
+   
+           ZTest Always
+           Cull Off
+           ZWrite Off
+           //1. 閾値で明るい部分を抽出する
+           Pass
+           {
+               CGPROGRAM
+               #pragma vertex vertExtractBright
+               #pragma fragment fragExtractBright
+               ENDCG
+           }
+           //2. 縦方向のガウスブラー
+           Pass
+           {
+               CGPROGRAM
+               #pragma vertex vertBlurVertical
+               #pragma fragment fragBlur
+               ENDCG
+           }
+           //3.横方向のガウスブラー
+           Pass
+           {
+               CGPROGRAM
+               #pragma vertex vertBlurHorizontal
+               #pragma fragment fragBlur
+               ENDCG
+           }
+           //4 元画像とブレントする
+           Pass
+           {
+               CGPROGRAM
+               #pragma vertex vertBloom
+               #pragma fragment fragBloom
+               ENDCG
+           }
+       }
+   
+   }
+   
+   ```
+
+- 効果![gif_Bloom04](E:\My_Obsidian\Test\OpusStudio\研修任務\ブログ\グラフィックス勉強ノート\Image\Bloom\gif_Bloom04.gif)
+
+## 3 BloomのMask功能
+
+
+
+## 4. UnityでGodRay効果を実現する
+
+1. ラジアルブラー (Radial Blur)の紹介
+
+   ゲーム画面にスビート感を与える、
+
+   光の投射のシミュレーションとしてよく使われています。
+
+   ![image.png](Image\Bloom\image_Bloom05.png)
+
+2. Radial Blur の実装原理
+
+   1. 一つの点RadialCenterを決める
+   2. 各サンプル点のuvはRadialCenterをベースとしてオフセットする
+   3. 一定回数のサンプルする
+   4. そのサンプルしたRGBの和　/　サンプル回数
+
+3. 実装コード
+
+   1. C#
+
+      ```c#
+      using UnityEngine;
+      using UnityEngine.Serialization;
+      
+      namespace _01_Bloom
+      {
+          public class GodRay : PostEffectsBase
+          {
+              [SerializeField] private Shader _godRayShader;
+              private Material _godRayMaterial = null;
+      
+              public Material GodRayMaterial
+              {
+                  get
+                  {
+                      _godRayMaterial = CheckShaderAndCreateMaterial(_godRayShader, _godRayMaterial);
+                      return _godRayMaterial;
+                  }
+              }
+      
+              // 閾値
+              [SerializeField] private Color _colorThreshold = Color.gray;
+      
+              [SerializeField] private int _radialSampleCount = 6;
+              // Light Color
+              [SerializeField] private Color _lightColor = Color.white;
+      
+              // Light Power
+              [SerializeField][Range(0.0f, 20.0f)] private float lightPower = 0.5f;
+      
+              // uv offset
+              [SerializeField][Range(0.0f, 10.0f)] private float SamplerScale = 1;
+              
+              // BlurIteration回数
+              [SerializeField][Range(1, 5)] private int _blurIteration = 2;
+              
+              [SerializeField][Range(1, 5)] private int _DownSample = 1;
+      
+              // Light　Position　
+              [SerializeField]private Transform _lightTransform;
+      
+              // Light　Radius 
+              [SerializeField][Range(0.0f, 5.0f)] private float _lightRadius = 2.0f;
+      
+              // 提取高亮结果Pow系数，用于适当降低颜色过亮的情况
+              [SerializeField][Range(1.0f, 4.0f)] private float _lightPowFactor = 3.0f;
+      
+              private Camera _targetCamera = null;
+      
+              void Awake()
+              {
+                  _targetCamera = GetComponent<Camera>();
+              }
+      
+              void OnRenderImage(RenderTexture src, RenderTexture dest)
+              {
+                  if (GodRayMaterial && _targetCamera)
+                  {
+                      int rtW = src.width / _DownSample;
+                      int rtH = src.height / _DownSample;
+                     
+                      RenderTexture buffer0 = RenderTexture.GetTemporary(rtW, rtH, 0, src.format);
+      
+                      
+                      //lightの　WorldPos -> viewPortPos
+                      Vector3 viewPortLightPos = _lightTransform == null
+                          ? new Vector3(.5f, .5f, 0)
+                          : _targetCamera.WorldToViewportPoint(_lightTransform.position);
+      
+                      // Set　Shader　Value
+                      GodRayMaterial.SetVector("_ColorThreshold", _colorThreshold);
+                      GodRayMaterial.SetVector("_ViewPortLightPos",
+                          new Vector4(viewPortLightPos.x, viewPortLightPos.y, viewPortLightPos.z, 0));
+                      GodRayMaterial.SetFloat("_LightRadius", _lightRadius);
+                      GodRayMaterial.SetInt("_RadialSampleCount", _radialSampleCount);
+                      
+                      GodRayMaterial.SetFloat("_LightPowFactor", _lightPowFactor);
+                      // Pass0 ExtractBright
+                      Graphics.Blit(src, buffer0, GodRayMaterial, 0); 
+                      
+        
+      
+                      // Radial Blur の　Sample　UV　Offset
+                      float samplerOffset = SamplerScale / src.width;
+      
+                      // Radial Blur
+                      for (int i = 0; i < _blurIteration; i++)
+                      {
+                          RenderTexture buffer1 = RenderTexture.GetTemporary(rtW, rtH, 0, src.format);
+                          float offset = samplerOffset * (i * 2 + 1);
+                          GodRayMaterial.SetVector("_Offsets", new Vector4(offset, offset, 0, 0));
+                          Graphics.Blit(buffer0, buffer1, GodRayMaterial, 1);
+      
+                          offset = samplerOffset * (i * 2 + 2);
+                          GodRayMaterial.SetVector("_Offsets", new Vector4(offset, offset, 0, 0));
+                          Graphics.Blit(buffer1, buffer0, GodRayMaterial, 1);
+                          RenderTexture.ReleaseTemporary(buffer1);
+                      }
+      
+                      
+                      // blurした結果　-> shader
+                      GodRayMaterial.SetTexture("_BlurTex", buffer0);
+                      GodRayMaterial.SetVector("_LightColor", _lightColor);
+                      GodRayMaterial.SetFloat("_LightPower", lightPower);
+      
+                      // blend
+                      Graphics.Blit(src, dest, GodRayMaterial, 2);
+                      
+                      RenderTexture.ReleaseTemporary(buffer0);
+                  }
+                  else
+                  {
+                      Graphics.Blit(src, dest);
+                  }
+              }
+      
+          }
+      }
+      ```
+      
+   2. Shader
+   
+      ```shader
+      Shader "Wyt/Unlit/GodRay"
+      {
+          Properties
+      	{
+      		_MainTex("Base (RGB)", 2D) = "white" {}
+      		_BlurTex("Blur", 2D) = "white"{}
+      //		_ColorThreshold("_ColorThreshold",Vector) = (0,0,0,0)
+      //		_ViewPortLightPos("_ViewPortLightPos",Vector) = (0,0,0,0)
+      //		_LightRadius("_LightRadius",Float) = 0
+      //		_RadialSampleCount("_RadialSampleCount",Int) = 6
+      //		_Offsets("_Offsets",Vector) = (0,0,0,0)
+      //		_LightColor("_LightColor",Color) = (0,0,0,0)
+      //		_LightPower("_LightPower",Float) = 1
+      //		_LightPowFactor("_LightPowFactor",Float) = 1
+      	}
+       
+      	CGINCLUDE
+      
+      	#include "UnityCG.cginc"
+      	
+      
+      	struct v2fExtractBright
+      	{
+      		float4 pos : SV_POSITION;
+      		float2 uv : TEXCOORD0;
+      	};
+       
+      
+      	struct v2fRadialBlur
+      	{
+      		float4 pos : SV_POSITION;
+      		float2 uv  : TEXCOORD0;
+      		float2 blurOffset : TEXCOORD1;
+      	};
+       
+      
+      	struct v2fGodRay
+      	{
+      		float4 pos : SV_POSITION;
+      		float2 uv1  : TEXCOORD0;
+      		float2 uv2 : TEXCOORD1;
+      	};
+      
+      
+      	sampler2D _MainTex;
+      	float4 _MainTex_TexelSize;
+      	sampler2D _BlurTex;
+      	//float4 _BlurTex_TexelSize;
+      	float4 _ViewPortLightPos;
+      
+      	int _RadialSampleCount = 6;
+      	float4 _Offsets;
+      	float4 _ColorThreshold; 
+      	float4 _LightColor; 
+      	float _LightPower; 
+      	float _LightPowFactor; 
+      	float _LightRadius; 
+      	
+      	v2fExtractBright vertExtractBright(appdata_img v)
+      	{
+      		v2fExtractBright o;
+      		o.pos = UnityObjectToClipPos(v.vertex);
+      		o.uv = v.texcoord.xy;
+      
+      		#if UNITY_UV_STARTS_AT_TOP
+      		if (_MainTex_TexelSize.y < 0)
+      			o.uv.y = 1 - o.uv.y;
+      		#endif	
+      		return o;
+      	}
+       
+      
+      	fixed4 fragExtractBright(v2fExtractBright i) : SV_Target
+      	{
+      		fixed4 color = tex2D(_MainTex, i.uv);
+      		//view Pos
+      		float distFromLight = length(_ViewPortLightPos.xy - i.uv);
+      		float distanceControl = saturate(_LightRadius - distFromLight);
+      
+      		// if color >_ColorThreshold
+      		float4 thresholdColor = saturate(color - _ColorThreshold) * distanceControl;
+      		float luminanceColor = Luminance(thresholdColor.rgb);
+      		luminanceColor = pow(luminanceColor, _LightPowFactor);
+      		return fixed4(luminanceColor, luminanceColor, luminanceColor, 1);
+      	}
+       
+      
+      	v2fRadialBlur vertRadialBlur(appdata_img v)
+      	{
+      		v2fRadialBlur o;
+      		o.pos = UnityObjectToClipPos(v.vertex);
+      		o.uv = v.texcoord.xy;
+      
+      		//Light方向　offset
+      		o.blurOffset = _Offsets * (_ViewPortLightPos.xy - o.uv);
+      
+      		return o;
+      	}
+       
+      
+      	fixed4 fragRadialBlur(v2fRadialBlur i) : SV_Target
+      	{
+      		half4 color = half4(0,0,0,0);
+      		//iterator 
+      		for(int j = 0; j < _RadialSampleCount; j++)   
+      		{	
+      			color += tex2D(_MainTex, i.uv.xy);
+      			i.uv.xy += i.blurOffset; 	
+      		}
+      		//
+      		return color / _RadialSampleCount;
+      	}
+       
+      
+      	v2fGodRay vertGodRay(appdata_img v)
+      	{
+      		v2fGodRay o;
+      		o.pos = UnityObjectToClipPos(v.vertex);
+      		o.uv1.xy = v.texcoord.xy;
+      		o.uv2.xy = o.uv1.xy;
+      		#if UNITY_UV_STARTS_AT_TOP
+      		if (_MainTex_TexelSize.y < 0)
+      			o.uv1.y = 1 - o.uv1.y;
+      		#endif	
+      		return o;
+      	}
+      
+      
+      	fixed4 fragGodRay(v2fGodRay i) : SV_Target
+      	{
+      		fixed4 ori = tex2D(_MainTex, i.uv1);
+      		fixed4 blur = tex2D(_BlurTex, i.uv2);
+      		return ori + _LightPower * blur * _LightColor;
+      	}
+       
+      	ENDCG
+       
+      	SubShader
+      	{
+      		ZTest Always Cull Off ZWrite Off
+      
+      		// ExtractBright
+      		Pass
+      		{
+      			CGPROGRAM
+      			#pragma vertex vertExtractBright
+      			#pragma fragment fragExtractBright
+      			ENDCG
+      		}
+       
+      		// RadialBlur
+      		Pass
+      		{
+      			CGPROGRAM
+      			#pragma vertex vertRadialBlur
+      			#pragma fragment fragRadialBlur
+      			ENDCG
+      		}
+       
+      		// blend
+      		Pass
+      		{
+      			CGPROGRAM
+      			#pragma vertex vertGodRay
+      			#pragma fragment fragGodRay
+      			ENDCG
+      		}
+      	}
+      }
+      
+      ```
+   
+   3. 効果
+   
+      ![gif_godRay](Image\Bloom\gif_godRay.gif)
+
+## 参考資料
+
+https://learnopengl.com/Advanced-Lighting/Bloom
+
+https://en.wikipedia.org/wiki/Kernel_(image_processing)
+
+https://en.wikipedia.org/wiki/Bloom_(shader_effect)
+
