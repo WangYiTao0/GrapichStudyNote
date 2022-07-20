@@ -123,7 +123,8 @@ public class PostProcessData : ScriptableObject
         
         public sealed class ShaderResources
         {
-            ...              				         [Reload("Shaders/PostProcessing/Bloom.shader")]
+            ... 
+            [Reload("Shaders/PostProcessing/Bloom.shader")]
             public Shader bloomPS;
             ...
         }
@@ -304,11 +305,11 @@ namespace UnityEngine.Rendering.Universal
    }
    ```
 
-3. CustomPostProcessRenderer と　CustomPostProcessPass　を作成
+3. CustomPostProcessRenderer  と　CustomPostProcessPass　を作成
 
    ```c#
        [Serializable]
-   //単純にCustomPostProcessPassをRender Passに入れる
+       //単純にCustomPostProcessPassをRender Passに入れる
        public class CustomPostProcessRenderer:ScriptableRendererFeature
        {
            public FeatureSettings settings = new FeatureSettings();
@@ -394,12 +395,10 @@ namespace UnityEngine.Rendering.Universal
                if(renderingData.cameraData.isSceneViewCamera)
                    return;
                
-      
                CommandBuffer cmd = CommandBufferPool.Get("Custom Post Processing");
                cmd.Clear();
                
                // This holds all the current Volumes information
-               // which we will need later
                var stack = VolumeManager.instance.stack;
                
                #region Local Methods
@@ -483,7 +482,7 @@ namespace UnityEngine.Rendering.Universal
        }
    }
    ```
-
+   
    ![RadiusBlur02 (1)](https://github.com/WangYiTao0/GrapichStudyNote/blob/master/Image/RadiusBlur02%20(1).gif?raw=true)
 
 ## Project Repo
@@ -493,4 +492,6 @@ https://github.com/WangYiTao0/CustomURPPostprocessing
 ## 参考資料
 
 https://www.febucci.com/2022/05/custom-post-processing-in-urp/
+
+https://github.com/yahiaetman/URPCustomPostProcessingStack
 
